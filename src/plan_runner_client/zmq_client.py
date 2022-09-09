@@ -86,6 +86,56 @@ class IiwaPositionGetter:
         return iiwa_position_measured
 
 
+class IiwaJointTorqueGetter:
+    def __init__(self):
+        self.lc = lcm.LCM()
+        sub = self.lc.subscribe("IIWA_STATUS", self.sub_callback)
+        sub.set_queue_capacity(1)
+        self.iiwa_position_measured = None
+        self.msg_lock = threading.Lock()
+        self.t1 = threading.Thread(target=self.update_iiwa_joint_torque_measured)
+        self.t1.start()
+
+        # TODO: Set up logger (should really do it elsewhere...)
+        self.logger = logging.getLogger()
+        self.logger.setLevel(logging.DEBUG)
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setLevel(logging.DEBUG)
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        handler.setFormatter(formatter)
+        self.logger.addHandler(handler)
+
+        # Wait for IIWA_STATUS.
+        self.logger.info("Waiting for iiwa Status...")
+        while True:
+            self.msg_lock.acquire()
+            if self.iiwa_position_measured is not None:
+                self.msg_lock.release()
+                break
+
+            self.msg_lock.release()
+            time.sleep(0.005)  # check at 200Hz
+        self.logger.info("Received!")
+
+    def sub_callback(self, channel, data):
+        iiwa_status_msg = lcmt_iiwa_status.decode(data)
+        self.msg_lock.acquire()
+        self.iiwa_joint_torque_measured = iiwa_status_msg.joint_torque_measured
+        self.msg_lock.release()
+
+    def update_iiwa_joint_torque_measured(self):
+        while True:
+            self.lc.handle()
+
+    def get_iiwa_joint_torque_measured(self):
+        iiwa_joint_torque_measured = np.array([])
+        self.msg_lock.acquire()
+        if self.iiwa_joint_torque_measured:
+            iiwa_joint_toruqe_measured = np.array(self.iiwa_joint_torque_measured)
+        self.msg_lock.release()
+        return iiwa_joint_torque_measured
+
+
 class PlanManagerZmqClient:
     def __init__(self):
         self.context = zmq.Context()
@@ -115,6 +165,7 @@ class PlanManagerZmqClient:
 
         # subscribe to IIWA_STATUS.
         self.iiwa_position_getter = IiwaPositionGetter()
+        self.iiwa_joint_torque_getter = IiwaJointTorqueGetter()
 
         # iiwa7 plant.
         self.plant = build_iiwa7_plant()
@@ -148,6 +199,9 @@ class PlanManagerZmqClient:
     def get_current_joint_angles(self):
         return self.iiwa_position_getter.get_iiwa_position_measured()
 
+    def get_current_joint_torques(self):
+        return self.iiwa_joint_torque_getter.get_iiwa_joint_torque_measured()
+
     def send_plan(self, plan_msg):
         self.plan_msg_lock.acquire()
         self.last_plan_msg = copy.deepcopy(plan_msg)
@@ -159,6 +213,8 @@ class PlanManagerZmqClient:
 
     def wait_for_plan_to_finish(self):
         # TODO: add timeout.
+        torque_log = []
+        q_log = []
         while True:
             status_msg = self.get_plan_status()
             self.plan_msg_lock.acquire()
@@ -171,11 +227,16 @@ class PlanManagerZmqClient:
                 status_msg.status ==
                 lcmt_plan_status_constants.ERROR)
             self.plan_msg_lock.release()
+            print(self.get_current_joint_torques())
+            torque_log.append(self.get_current_joint_torques())
+            print(self.get_current_joint_angles())
+            q_log.append(self.get_current_joint_angles())
 
             if is_same_plan and (is_plan_finished or is_plan_error):
                 break
             time.sleep(0.01)
         print("Final status:", self.plan_stats_dict[status_msg.status])
+        return q_log, torque_log
 
     def abort(self):
         self.abort_client.send(b"abort")
