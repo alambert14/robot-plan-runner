@@ -36,6 +36,41 @@ print("Current end-effector position:")
 print(X_WE)
 time.sleep(1.0)
 
+table1_pose = RigidTransform()
+table2_pose = RigidTransform()
+q_iiwa_bin0 = np.array([-np.pi / 2, 0.1, 0, -1.2, 0, 1.6, 0])
+q_iiwa_bin1 = np.array([np.pi / 2, 0.1, 0, -1.2, 0, 1.6, 0])
+
+## Insert perception system here
+X_WG = RigidTransform()  # Position of grasp point in the world
+
+# Execute joint trajectory
+duration = 10
+t_knots = np.linspace(0, duration, 4)
+q_knots = np.zeros((4, 7))
+
+# Interpolate linearly
+q_knots[0, :] = zmq_client.get_current_joint_angles()
+q_knots[1, :] = q_iiwa_bin0
+q_knots[2, :] = (q_iiwa_bin0 + q_iiwa_bin1) / 2
+q_knots[3, :] = q_iiwa_bin1
+
+plan_msg1 = calc_joint_space_plan_msg(t_knots, q_knots)
+
+for i in range(7):
+    q_knots[3 * i + 1, :] = q_knots[3 * i, :]
+    q_knots[3 * i + 1, i] += 0.2
+    q_knots[3 * i + 2, :] = q_knots[3 * i + 1, :]
+    q_knots[3 * i + 2, i] -= 0.4
+    q_knots[3 * i + 3, :] = q_knots[3 * i + 2, :]
+    q_knots[3 * i + 3, i] += 0.2
+
+plan_msg1 = calc_joint_space_plan_msg(t_knots, q_knots)
+zmq_client.send_plan(plan_msg1)
+time.sleep(1.0)
+
+
+
 schunk.send_schunk_position_command(25)
 schunk.wait_for_command_to_finish()
 time.sleep(5.0)
